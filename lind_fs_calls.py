@@ -110,13 +110,23 @@
 # Store all of the information about the file system in a dict...
 # This should not be 0 because this is considered to be deleted
 
-ROOTDIRECTORYINODE = 1
+ROOTDIRECTORYINODE = 26
 
 METADATAFILENAME = 'lind.metadata'
 
 FILEDATAPREFIX = 'linddata.'
 
+DIRECTORYPREFIX = 'D'
+
+FILEPREFIX = 'F'
+
 filesystemmetadata = {}
+
+freeBlock = {}
+
+superBlock = {}
+
+dataBlocks = {}
 
 # A lock that prevents inconsistencies in metadata
 filesystemmetadatalock = createlock()
@@ -228,21 +238,54 @@ def _blank_fs_init():
     if filename.startswith(FILEDATAPREFIX):
       removefile(filename)
 
-  # Now setup blank data structures
-  filesystemmetadata['nextinode'] = 3
-  filesystemmetadata['dev_id'] = 20
-  filesystemmetadata['inodetable'] = {}
-  filesystemmetadata['inodetable'][ROOTDIRECTORYINODE] = {'size':0, 
-            'uid':DEFAULT_UID, 'gid':DEFAULT_GID, 
-            'mode':S_IFDIR | S_IRWXA, # directory + all permissions
-            'atime':1323630836, 'ctime':1323630836, 'mtime':1323630836,
-            'linkcount':2,    # the number of dir entries...
-            'filename_to_inode_dict': {'.':ROOTDIRECTORYINODE, 
-            '..':ROOTDIRECTORYINODE}}
-    
-  fastinodelookuptable['/'] = ROOTDIRECTORYINODE
+  #setup initial bocks for book keeping
+  #block 0
+  superBlock[0] = {}
+  superBlock[0] = {'creationTime': 1376483073,
+      'mounted': 50,
+      'devId':20,
+      'freeStart':1, 
+      'freeEnd':25, 
+      'root':ROOTDIRECTORYINODE, 
+      'maxBlocks':10000,
+      'changed' : True}
 
-  # it makes no sense this wasn't done before...
+  freeBlockkSize = 400
+  startFreeBlock = 27
+  endFreeBlock = 400
+  for x in xrange(1,26):
+    freeBlock[x] = {'changed' : True}
+    startFreeBlock = startFreeBlock if startFreeBlock < 400 else ((x - 1)*freeBlockkSize + 1)
+    endFreeBlock = x*freeBlockkSize
+    for y in xrange(startFreeBlock,endFreeBlock):
+      freeBlock[x][y] = True
+
+  dataBlocks[ROOTDIRECTORYINODE] = {
+      'size':0, 
+              'uid':DEFAULT_UID, 'gid':DEFAULT_GID, 
+              'mode':S_IFDIR | S_IRWXA, # directory + all permissions
+              'atime':1323630836, 'ctime':1323630836, 'mtime':1323630836,
+              'linkcount':2,    # the number of dir entries...
+              'filename_to_inode_dict': {DIRECTORYPREFIX+'.':ROOTDIRECTORYINODE, 
+              DIRECTORYPREFIX+'..':ROOTDIRECTORYINODE},
+              'changed' : True
+            }
+  
+
+  # # Now setup blank data structures
+  # filesystemmetadata['nextinode'] = 3
+  # filesystemmetadata['dev_id'] = 20
+  # filesystemmetadata['inodetable'] = {}
+  # filesystemmetadata['inodetable'][ROOTDIRECTORYINODE] = {'size':0, 
+  #           'uid':DEFAULT_UID, 'gid':DEFAULT_GID, 
+  #           'mode':S_IFDIR | S_IRWXA, # directory + all permissions
+  #           'atime':1323630836, 'ctime':1323630836, 'mtime':1323630836,
+  #           'linkcount':2,    # the number of dir entries...
+  #           'filename_to_inode_dict': {DIRECTORYPREFIX+'.':ROOTDIRECTORYINODE, 
+  #           DIRECTORYPREFIX+'..':ROOTDIRECTORYINODE}}
+    
+  # fastinodelookuptable['/'] = ROOTDIRECTORYINODE
+  # it makes no sense this wasn/'t done before...
   persist_metadata(METADATAFILENAME)
 
 
@@ -250,18 +293,48 @@ def _blank_fs_init():
 # These are used to initialize and stop the system
 def persist_metadata(metadatafilename):
 
-  metadatastring = serializedata(filesystemmetadata)
+  # write superblock
+  if superBlock[0]['changed'] is True:
+    fileName = FILEDATAPREFIX+str(0)
+    blockStr = serializedata(superBlock[0])
+    try:
+      removefile(fileName)
+    except FileNotFoundError:
+      pass
+    bFile = openfile(fileName,True)
+    bFile.writeat(blockStr,0)
+    bFile.close()
 
-  
-  # open the file (clobber) and write out the information...
-  try:
-    removefile(metadatafilename)
-  except FileNotFoundError:
-    pass
-  metadatafo = openfile(metadatafilename,True)
-  metadatafo.writeat(metadatastring,0)
-  metadatafo.close()
+  # write free block data
+  for key, ele in freeBlock.iteritems():
+    if freeBlock[key]['changed'] is True:
+      freeBlock[key]['changed'] = False
+      fileName = FILEDATAPREFIX+str(key)
+      blockStr = serializedata(freeBlock[key])
+      try:
+        removefile(fileName)
+      except FileNotFoundError:
+        pass
+      bFile = openfile(fileName,True)
+      bFile.writeat(blockStr,0)
+      bFile.close()
 
+  # write our data blocks
+  print dataBlocks
+  for key, ele in dataBlocks.iteritems():
+
+    if dataBlocks[key]['changed'] is True:
+      dataBlocks[key]['changed'] = False
+      fileName = FILEDATAPREFIX+str(key)
+      print fileName
+      blockStr = serializedata(dataBlocks[key])
+      try:
+        removefile(fileName)
+      except FileNotFoundError:
+        pass
+      bFile = openfile(fileName,True)
+      bFile.writeat(blockStr,0)
+      bFile.close()
 
 
 def restore_metadata(metadatafilename):
