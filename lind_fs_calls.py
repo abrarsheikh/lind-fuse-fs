@@ -185,7 +185,7 @@ def load_fs(name=METADATAFILENAME):
   """
   try:
     # lets see if the metadata file is already here?
-    f = openfile(name, False)
+    f = openfile(FILEDATAPREFIX+'0', False)
   except FileNotFoundError, e:
     warning("Note: No filesystem found, building a fresh one.")
     _blank_fs_init()
@@ -205,6 +205,7 @@ def load_fs_special_files():
   Specifically /dev/null, /dev/urandom and /dev/random
   """
   try: 
+     print "making dev"
      mkdir_syscall("/dev", S_IRWXA)
   except SyscallError as e:
     warning( "making /dev failed. Skipping",str(e))
@@ -240,8 +241,9 @@ def _blank_fs_init():
 
   #setup initial bocks for book keeping
   #block 0
-  superBlock[0] = {}
-  superBlock[0] = {'creationTime': 1376483073,
+  filesystemmetadata['dev_id'] = 20
+
+  filesystemmetadata['superBlock'] = {'creationTime': 1376483073,
       'mounted': 50,
       'devId':20,
       'freeStart':1, 
@@ -250,17 +252,19 @@ def _blank_fs_init():
       'maxBlocks':10000,
       'changed' : True}
 
+  filesystemmetadata['freeBlock'] = {}
   freeBlockkSize = 400
   startFreeBlock = 27
   endFreeBlock = 400
   for x in xrange(1,26):
-    freeBlock[x] = {'changed' : True}
+    filesystemmetadata['freeBlock'][x] = {'changed' : True}
     startFreeBlock = startFreeBlock if startFreeBlock < 400 else ((x - 1)*freeBlockkSize + 1)
     endFreeBlock = x*freeBlockkSize
     for y in xrange(startFreeBlock,endFreeBlock):
-      freeBlock[x][y] = True
+      filesystemmetadata['freeBlock'][x][y] = True
 
-  dataBlocks[ROOTDIRECTORYINODE] = {
+  filesystemmetadata['inodetable'] = {}
+  filesystemmetadata['inodetable'][ROOTDIRECTORYINODE] = {
       'size':0, 
               'uid':DEFAULT_UID, 'gid':DEFAULT_GID, 
               'mode':S_IFDIR | S_IRWXA, # directory + all permissions
@@ -284,7 +288,7 @@ def _blank_fs_init():
   #           'filename_to_inode_dict': {DIRECTORYPREFIX+'.':ROOTDIRECTORYINODE, 
   #           DIRECTORYPREFIX+'..':ROOTDIRECTORYINODE}}
     
-  # fastinodelookuptable['/'] = ROOTDIRECTORYINODE
+  fastinodelookuptable['/'] = ROOTDIRECTORYINODE
   # it makes no sense this wasn/'t done before...
   persist_metadata(METADATAFILENAME)
 
@@ -294,9 +298,9 @@ def _blank_fs_init():
 def persist_metadata(metadatafilename):
 
   # write superblock
-  if superBlock[0]['changed'] is True:
+  if filesystemmetadata['superBlock']['changed'] is True:
     fileName = FILEDATAPREFIX+str(0)
-    blockStr = serializedata(superBlock[0])
+    blockStr = serializedata(filesystemmetadata['superBlock'])
     try:
       removefile(fileName)
     except FileNotFoundError:
@@ -306,11 +310,11 @@ def persist_metadata(metadatafilename):
     bFile.close()
 
   # write free block data
-  for key, ele in freeBlock.iteritems():
-    if freeBlock[key]['changed'] is True:
-      freeBlock[key]['changed'] = False
+  for key, ele in filesystemmetadata['freeBlock'].iteritems():
+    if filesystemmetadata['freeBlock'][key]['changed'] is True:
+      filesystemmetadata['freeBlock'][key]['changed'] = False
       fileName = FILEDATAPREFIX+str(key)
-      blockStr = serializedata(freeBlock[key])
+      blockStr = serializedata(filesystemmetadata['freeBlock'][key])
       try:
         removefile(fileName)
       except FileNotFoundError:
@@ -320,14 +324,13 @@ def persist_metadata(metadatafilename):
       bFile.close()
 
   # write our data blocks
-  print dataBlocks
-  for key, ele in dataBlocks.iteritems():
+  for key, ele in filesystemmetadata['inodetable'].iteritems():
 
-    if dataBlocks[key]['changed'] is True:
-      dataBlocks[key]['changed'] = False
+    if filesystemmetadata['inodetable'][key]['changed'] is True:
+      filesystemmetadata['inodetable'][key]['changed'] = False
       fileName = FILEDATAPREFIX+str(key)
       print fileName
-      blockStr = serializedata(dataBlocks[key])
+      blockStr = serializedata(filesystemmetadata['inodetable'][key])
       try:
         removefile(fileName)
       except FileNotFoundError:
@@ -340,23 +343,53 @@ def persist_metadata(metadatafilename):
 def restore_metadata(metadatafilename):
   # should only be called with a fresh system...
   assert(filesystemmetadata == {})
+  filesystemmetadata['freeBlock'] = {}
+  filesystemmetadata['inodetable'] = {}
 
-  # open the file and write out the information...
-  metadatafo = openfile(metadatafilename,True)
-  metadatastring = metadatafo.readat(None, 0)
-  metadatafo.close()
+  # filesystemmetadata = {
+  #   'superBlock' : {},
+  #   'freeBlock' : {},
+  #   'inodetable' : {}
+  # }
+  files = [k for k in listfiles() if FILEDATAPREFIX in k]
+  files.sort(key = lambda x: int(x.split(".")[1]))
+  for filename in files:
 
-  # get the dict we want
-  desiredmetadata = deserializedata(metadatastring)
+    # restore free blocks
+    metadatafo = openfile(filename,True)
+    metadatastring = metadatafo.readat(None, 0)
+    metadatafo.close()
+
+    # get the dict we want
+    desiredmetadata = deserializedata(metadatastring)
+    op = int(filename.split('.')[1])
+
+    if op == 0:
+      filesystemmetadata['superBlock'] = desiredmetadata
+    elif op >=1 and op <= 25:
+      filesystemmetadata['freeBlock'][op] = desiredmetadata
+    elif op > 25:
+      filesystemmetadata['inodetable'][op] = desiredmetadata
+
+
+
+  # # open the file and write out the information...
+  # metadatafo = openfile(metadatafilename,True)
+  # metadatastring = metadatafo.readat(None, 0)
+  # metadatafo.close()
+
+  # # get the dict we want
+  # desiredmetadata = deserializedata(metadatastring)
 
   # I need to put things in the dict, but it's not a global...   so instead
   # add them one at a time.   It should be empty to start with
-  for item in desiredmetadata:
-    filesystemmetadata[item] = desiredmetadata[item]
+  # for item in desiredmetadata:
+  #   filesystemmetadata[item] = desiredmetadata[item]
 
 
   # I need to rebuild the fastinodelookuptable. let's do this!
   _rebuild_fastinodelookuptable()
+
 
 
 
@@ -365,7 +398,8 @@ def _recursive_rebuild_fastinodelookuptable_helper(path, inode):
   
   # for each entry in my table...
   for entryname,entryinode in filesystemmetadata['inodetable'][inode]['filename_to_inode_dict'].iteritems():
-    
+
+    entryname = entryname[1:]
     # if it's . or .. skip it.
     if entryname == '.' or entryname == '..':
       continue
@@ -383,7 +417,6 @@ def _rebuild_fastinodelookuptable():
   # first, empty it...
   for item in fastinodelookuptable:
     del fastinodelookuptable[item]
-
   # now let's go through and add items...
   
   # I need to add the root.   
@@ -408,7 +441,7 @@ def _rebuild_fastinodelookuptable():
 # private helper function that converts a relative path or a path with things
 # like foo/../bar to a normal path.
 def _get_absolute_path(path):
-  
+
   # should raise an ENOENT error...
   if path == '':
     return path
@@ -474,6 +507,26 @@ def _get_absolute_path(path):
 def _get_absolute_parent_path(path):
   return _get_absolute_path(path+'/..')
   
+
+# get next free block
+def _get_set_nextFreeBlock_helper():
+  freeBlockIndex = filesystemmetadata['superBlock']['freeStart']
+  nextFreeBlock = -1
+
+  for key, ele in filesystemmetadata['freeBlock'][freeBlockIndex].iteritems():
+    if filesystemmetadata['freeBlock'][freeBlockIndex][key] == True:
+      filesystemmetadata['freeBlock'][freeBlockIndex][key] = False
+      nextFreeBlock = key
+      filesystemmetadata['freeBlock'][freeBlockIndex]['changed'] = True
+      break
+
+  return nextFreeBlock
+
+def _freeUp_freeBlock(iNodeNo):
+  blockNo = int(iNodeNo / 400) + 1
+  print blockNo
+  print iNodeNo
+  print filesystemmetadata['freeBlock'][blockNo][iNodeNo]
 
 
 
@@ -672,6 +725,7 @@ def mkdir_syscall(path, mode):
   # lock to prevent things from changing while we look this up...
   filesystemmetadatalock.acquire(True)
 
+  print "dev debug2"
   # ... but always release it...
   try:
     if path == '':
@@ -683,10 +737,12 @@ def mkdir_syscall(path, mode):
     if truepath in fastinodelookuptable:
       raise SyscallError("mkdir_syscall","EEXIST","The path exists.")
 
+    print "dev debug3", path
       
     # okay, it doesn't exist (great!).   Does it's parent exist and is it a 
     # dir?
     trueparentpath = _get_absolute_parent_path(path)
+    print "dev debug4", trueparentpath
 
     if trueparentpath not in fastinodelookuptable:
       raise SyscallError("mkdir_syscall","ENOENT","Path does not exist.")
@@ -698,15 +754,18 @@ def mkdir_syscall(path, mode):
 
     # TODO: I should check permissions...
 
-
+    print "dev debug2"
     assert(mode & S_IRWXA == mode)
 
     # okay, great!!!   We're ready to go!   Let's make the new directory...
     dirname = truepath.split('/')[-1]
 
     # first, make the new directory...
-    newinode = filesystemmetadata['nextinode']
-    filesystemmetadata['nextinode'] += 1
+    # newinode = filesystemmetadata['nextinode']
+    # filesystemmetadata['nextinode'] += 1
+    newinode = _get_set_nextFreeBlock_helper()
+
+
 
     newinodeentry = {'size':0, 'uid':DEFAULT_UID, 'gid':DEFAULT_GID, 
             'mode':mode | S_IFDIR,  # DIR+rwxr-xr-x
@@ -714,18 +773,21 @@ def mkdir_syscall(path, mode):
             # counter too.
             'atime':1323630836, 'ctime':1323630836, 'mtime':1323630836,
             'linkcount':2,    # the number of dir entries...
-            'filename_to_inode_dict': {'.':newinode, '..':parentinode}}
+            'filename_to_inode_dict': {DIRECTORYPREFIX+'.':newinode, DIRECTORYPREFIX+'..':parentinode}, 'changed' : True}
     
     # ... and put it in the table..
     filesystemmetadata['inodetable'][newinode] = newinodeentry
 
 
-    filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][dirname] = newinode
+    filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][DIRECTORYPREFIX+dirname] = newinode
     # increment the link count on the dir...
     filesystemmetadata['inodetable'][parentinode]['linkcount'] += 1
+    filesystemmetadata['inodetable'][parentinode]['changed'] = True
 
     # finally, update the fastinodelookuptable and return success!!!
     fastinodelookuptable[truepath] = newinode
+
+    print fastinodelookuptable
     
     return 0
 
@@ -780,15 +842,18 @@ def rmdir_syscall(path):
 
     # remove the entry from the inode table...
     del filesystemmetadata['inodetable'][thisinode]
+    _freeUp_freeBlock(thisinode)
 
 
     # We're ready to go!   Let's clean up the file entry
     dirname = truepath.split('/')[-1]
     # remove the entry from the parent...
 
-    del filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][dirname]
+    del filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][DIRECTORYPREFIX+dirname]
     # decrement the link count on the dir...
     filesystemmetadata['inodetable'][parentinode]['linkcount'] -= 1
+
+    filesystemmetadata['inodetable'][parentinode]['changed'] = True
 
     # finally, clean up the fastinodelookuptable and return success!!!
     del fastinodelookuptable[truepath]
@@ -1032,7 +1097,7 @@ def fstat_syscall(fd):
 
 # private helper routine that returns stat data given an inode
 def _istat_helper(inode):
-  ret =  (filesystemmetadata['dev_id'],          # st_dev
+  ret =  (filesystemmetadata['superBlock']['devId'],          # st_dev
           inode,                                 # inode
           filesystemmetadata['inodetable'][inode]['mode'],
           filesystemmetadata['inodetable'][inode]['linkcount'],
@@ -1110,9 +1175,10 @@ def open_syscall(path, flags, mode):
       filename = truepath.split('/')[-1]
 
       # first, make the new file's entry...
-      newinode = filesystemmetadata['nextinode']
-      filesystemmetadata['nextinode'] += 1
+      # newinode = filesystemmetadata['nextinode']
+      # filesystemmetadata['nextinode'] += 1
 
+      newinode = _get_set_nextFreeBlock_helper()
       # be sure there aren't extra mode bits...   No errno seems to exist for 
       # this.
       assert(mode & (S_IRWXA|S_FILETYPEFLAGS) == mode)
@@ -1128,12 +1194,14 @@ def open_syscall(path, flags, mode):
     
       # ... and put it in the table..
       filesystemmetadata['inodetable'][newinode] = newinodeentry
+      filesystemmetadata['inodetable'][newinode]['changed'] = True
 
 
       # let's make the parent point to it...
-      filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][filename] = newinode
+      filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][FILEPREFIX+filename] = newinode
       # ... and increment the link count on the dir...
       filesystemmetadata['inodetable'][parentinode]['linkcount'] += 1
+      filesystemmetadata['inodetable'][parentinode]['changed'] = True
 
       # finally, update the fastinodelookuptable
       fastinodelookuptable[truepath] = newinode
@@ -1196,10 +1264,9 @@ def open_syscall(path, flags, mode):
     
 
     # TODO handle read / write locking, etc.
-
-    # Add the entry to the table!
-
     filedescriptortable[thisfd] = {'position':position, 'inode':inode, 'lock':createlock(), 'flags':flags&O_RDWRFLAGS}
+
+
 
     # Done!   Let's return the file descriptor.
     return thisfd
@@ -1795,6 +1862,7 @@ def getdents_syscall(fd, quantity):
       # getdents returns the mode also (at least on Linux)...
       entrytype = get_direnttype_from_mode(filesystemmetadata['inodetable'][entryinode]['mode'])
 
+      entryname = entryname[1:]
       # Get the size of each entry, the size should be a multiple of 8.
       # The size of each entry is determined by sizeof(struct linux_dirent) which is 20 bytes plus the length of name of the file.
       # So, size of each entry becomes : 21 => 24, 26 => 32, 32 => 32.
@@ -1967,7 +2035,6 @@ def mknod_syscall(path, mode, dev):
   # properly, instead of putting everything in open_syscall.
   inode = filedescriptortable[fd]['inode']
   filesystemmetadata['inodetable'][inode]['rdev'] = dev
- 
   # close the file descriptor... 
   close_syscall(fd)
   return 0
