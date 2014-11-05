@@ -868,10 +868,6 @@ def rmdir_syscall(path):
 
 
 
-
-
-
-
 ##### LINK  #####
 
 
@@ -931,9 +927,11 @@ def link_syscall(oldpath, newpath):
     filesystemmetadata['inodetable'][newparentinode]['filename_to_inode_dict'][newfilename] = oldinode
     # increment the link count on the dir...
     filesystemmetadata['inodetable'][newparentinode]['linkcount'] += 1
+    filesystemmetadata['inodetable'][newparentinode]['changed'] = True
 
     # ... and the file itself
     filesystemmetadata['inodetable'][oldinode]['linkcount'] += 1
+    filesystemmetadata['inodetable'][oldinode]['changed'] = True
 
     # finally, update the fastinodelookuptable and return success!!!
     fastinodelookuptable[truenewpath] = oldinode
@@ -991,6 +989,8 @@ def unlink_syscall(path):
     del filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][dirname]
     # decrement the link count on the dir...
     filesystemmetadata['inodetable'][parentinode]['linkcount'] -= 1
+    filesystemmetadata['inodetable'][parentinode]['changed'] = True
+
 
     # clean up the fastinodelookuptable
     del fastinodelookuptable[truepath]
@@ -998,10 +998,13 @@ def unlink_syscall(path):
 
     # decrement the link count...
     filesystemmetadata['inodetable'][thisinode]['linkcount'] -= 1
+    filesystemmetadata['inodetable'][thisinode]['changed'] = True
+
 
     # If zero, remove the entry from the inode table
     if filesystemmetadata['inodetable'][thisinode]['linkcount'] == 0:
       del filesystemmetadata['inodetable'][thisinode]
+      _freeUp_freeBlock(thisinode)
 
       # TODO: I also would remove the file.   However, I need to do special
       # things if it's open, like wait until it is closed to remove it.
@@ -1913,6 +1916,7 @@ def chmod_syscall(path, mode):
     # should overwrite any previous permissions, according to POSIX.   However,
     # we want to keep the 'type' part of the mode from before
     filesystemmetadata['inodetable'][thisinode]['mode'] = (filesystemmetadata['inodetable'][thisinode]['mode'] &~S_IRWXA) | mode
+    filesystemmetadata['inodetable'][thisinode]['changed'] = True
 
   finally:
     persist_metadata(METADATAFILENAME)
