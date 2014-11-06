@@ -120,6 +120,8 @@ DIRECTORYPREFIX = 'D'
 
 FILEPREFIX = 'F'
 
+BLOCKSIZE = 4096 
+
 filesystemmetadata = {}
 
 freeBlock = {}
@@ -205,7 +207,6 @@ def load_fs_special_files():
   Specifically /dev/null, /dev/urandom and /dev/random
   """
   try: 
-     print "making dev"
      mkdir_syscall("/dev", S_IRWXA)
   except SyscallError as e:
     warning( "making /dev failed. Skipping",str(e))
@@ -329,7 +330,6 @@ def persist_metadata(metadatafilename):
     if filesystemmetadata['inodetable'][key]['changed'] is True:
       filesystemmetadata['inodetable'][key]['changed'] = False
       fileName = FILEDATAPREFIX+str(key)
-      print fileName
       blockStr = serializedata(filesystemmetadata['inodetable'][key])
       try:
         removefile(fileName)
@@ -512,13 +512,16 @@ def _get_absolute_parent_path(path):
 def _get_set_nextFreeBlock_helper():
   freeBlockIndex = filesystemmetadata['superBlock']['freeStart']
   nextFreeBlock = -1
-
-  for key, ele in filesystemmetadata['freeBlock'][freeBlockIndex].iteritems():
-    if filesystemmetadata['freeBlock'][freeBlockIndex][key] == True:
-      filesystemmetadata['freeBlock'][freeBlockIndex][key] = False
-      nextFreeBlock = key
-      filesystemmetadata['freeBlock'][freeBlockIndex]['changed'] = True
-      break
+  while nextFreeBlock == -1:
+    for key, ele in filesystemmetadata['freeBlock'][freeBlockIndex].iteritems():
+      if filesystemmetadata['freeBlock'][freeBlockIndex][key] == True:
+        filesystemmetadata['freeBlock'][freeBlockIndex][key] = False
+        nextFreeBlock = key
+        filesystemmetadata['freeBlock'][freeBlockIndex]['changed'] = True
+        break
+    if nextFreeBlock == -1:
+      freeBlockIndex = filesystemmetadata['superBlock']['freeStart'] + 1
+      filesystemmetadata['superBlock']['changed'] = True
 
   return nextFreeBlock
 
@@ -924,7 +927,7 @@ def link_syscall(oldpath, newpath):
     # okay, great!!!   We're ready to go!   Let's make the file...
     newfilename = truenewpath.split('/')[-1]
     # first, make the directory entry...
-    filesystemmetadata['inodetable'][newparentinode]['filename_to_inode_dict'][newfilename] = oldinode
+    filesystemmetadata['inodetable'][newparentinode]['filename_to_inode_dict'][FILEPREFIX + newfilename] = oldinode
     # increment the link count on the dir...
     filesystemmetadata['inodetable'][newparentinode]['linkcount'] += 1
     filesystemmetadata['inodetable'][newparentinode]['changed'] = True
@@ -985,8 +988,7 @@ def unlink_syscall(path):
     # We're ready to go!   Let's clean up the file entry
     dirname = truepath.split('/')[-1]
     # remove the entry from the parent...
-
-    del filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][dirname]
+    del filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][FILEPREFIX+dirname]
     # decrement the link count on the dir...
     filesystemmetadata['inodetable'][parentinode]['linkcount'] -= 1
     filesystemmetadata['inodetable'][parentinode]['changed'] = True
@@ -1003,9 +1005,19 @@ def unlink_syscall(path):
 
     # If zero, remove the entry from the inode table
     if filesystemmetadata['inodetable'][thisinode]['linkcount'] == 0:
-      del filesystemmetadata['inodetable'][thisinode]
-      _freeUp_freeBlock(thisinode)
+      #case when this is a direct pointer
+      if filesystemmetadata['inodetable'][thisinode]['indirect'] == 0:
+        _freeUp_freeBlock(filesystemmetadata['inodetable'][thisinode]['location'])
+        del filesystemmetadata['inodetable'][thisinode]
+      else: # case when this is a indirect pointer
+        if filesystemmetadata['inodetable'][thisinode]['location'] not in fileobjecttable:
+          fileobjecttable[filesystemmetadata['inodetable'][thisinode]['location']] = openfile(FILEDATAPREFIX + filesystemmetadata['inodetable'][thisinode]['location'], False)
+        indexBlock = deserializedata(fileobjecttable[filesystemmetadata['inodetable'][thisinode]['location']].readat(None, 0)) 
 
+        for key, pointer in indexBlock.iteritems():
+          _freeUp_freeBlock(pointer)
+        _freeUp_freeBlock(filesystemmetadata['inodetable'][thisinode]['location'])
+        del filesystemmetadata['inodetable'][thisinode]
       # TODO: I also would remove the file.   However, I need to do special
       # things if it's open, like wait until it is closed to remove it.
     
@@ -1182,6 +1194,8 @@ def open_syscall(path, flags, mode):
       # filesystemmetadata['nextinode'] += 1
 
       newinode = _get_set_nextFreeBlock_helper()
+
+      fileInodeBlock = _get_set_nextFreeBlock_helper()
       # be sure there aren't extra mode bits...   No errno seems to exist for 
       # this.
       assert(mode & (S_IRWXA|S_FILETYPEFLAGS) == mode)
@@ -1193,7 +1207,7 @@ def open_syscall(path, flags, mode):
             # BUG: I'm listing some arbitrary time values.  I could keep a time
             # counter too.
             'atime':1323630836, 'ctime':1323630836, 'mtime':1323630836,
-            'linkcount':1}
+            'linkcount':1, 'indirect' : 0, 'location' : fileInodeBlock}
     
       # ... and put it in the table..
       filesystemmetadata['inodetable'][newinode] = newinodeentry
@@ -1253,9 +1267,16 @@ def open_syscall(path, flags, mode):
     # Is it a regular file?
     if IS_REG(filesystemmetadata['inodetable'][inode]['mode']):
       # this is a regular file.  If it's not open, let's open it! 
-      if inode not in fileobjecttable:
-        thisfo = openfile(FILEDATAPREFIX+str(inode),False)
-        fileobjecttable[inode] = thisfo
+      if filesystemmetadata['inodetable'][inode]['location'] not in fileobjecttable:
+        thisfo = openfile(FILEDATAPREFIX+str(filesystemmetadata['inodetable'][inode]['location']),True)
+        fileobjecttable[filesystemmetadata['inodetable'][inode]['location']] = thisfo
+        if filesystemmetadata['inodetable'][inode]['indirect'] == 1:
+          pointers = deserializedata(fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].readat(None, 0))
+          for key, pointer in pointers.iteritems():
+            if pointer not in fileobjecttable:
+              thisfo = openfile(FILEDATAPREFIX+str(pointer),True)
+              fileobjecttable[pointer] = thisfo
+
 
     # I'm going to assume that if you use O_APPEND I only need to 
     # start the pointer in the right place.
@@ -1419,7 +1440,27 @@ def read_syscall(fd, count):
 
     # let's do a readat!
     position = filedescriptortable[fd]['position']
-    data = fileobjecttable[inode].readat(count,position)
+    location = filesystemmetadata['inodetable'][inode]['location'] 
+
+    if filesystemmetadata['inodetable'][inode]['indirect'] == 0:
+      data = fileobjecttable[location].readat(count,position)
+    else:
+      fileBockObj = desiredmetadata(fileobjecttable[location].readat(None, 0))
+
+      startBlock = int(position / BLOCKSIZE)
+      endBlock = int((position + count) / BLOCKSIZE)
+
+      data = ''
+      for x in range(startBlock, endBlock):
+        pointer = position % BLOCKSIZE
+        if x == startBlock:
+          data += fileobjecttable[fileBockObj[x]].readat(BLOCKSIZE - pointer, pointer)
+        elif x > startBlock and x < endblock:
+          data += fileobjecttable[fileBockObj[x]].readat(BLOCKSIZE, 0)
+        elif x == endBlock:
+          data += fileobjecttable[fileBockObj[x]].readat(size % BLOCKSIZE, 0)
+
+
 
     # and update the position
     filedescriptortable[fd]['position'] += len(data)
@@ -1429,8 +1470,6 @@ def read_syscall(fd, count):
   finally:
     # ... release the lock
     filedescriptortable[fd]['lock'].release()
-
-
 
 
 
@@ -1492,11 +1531,69 @@ def write_syscall(fd, data):
 
     if blankbytecount > 0:
       # let's write the blank part at the end of the file...
-      fileobjecttable[inode].writeat('\0'*blankbytecount,filesize)
-      
 
-    # writeat never writes less than desired in Repy V2.
-    fileobjecttable[inode].writeat(data,position)
+      #will handle this case later, fist let me verify my segmentation logic
+      if filesystemmetadata['inodetable'][inode]['indirect'] == 0:
+        if position + len(data) <= BLOCKSIZE:
+          fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].writeat('\0'*blankbytecount,filesize)
+
+    # check if its indirect pointer
+    if filesystemmetadata['inodetable'][inode]['indirect'] == 0:
+      #if cumulative bloc is less than blocksize we have nothing to worry
+      if position + len(data) <= BLOCKSIZE:
+        fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].writeat(data,position)
+      else: #if cumulative block size now exceeds BLOCKSIZE
+
+        #create first indirect node
+        freeBlock = _get_set_nextFreeBlock_helper()
+        indexBlock = _initialize_index_block_helper()
+        indexBlock[0] = filesystemmetadata['inodetable'][inode]['location']
+
+        #readjust pointets
+        filesystemmetadata['inodetable'][inode]['location'] = freeBlock
+        filesystemmetadata['inodetable'][inode]['indirect'] = 1
+
+        fileobjecttable[freeBlock] = openfile(FILEDATAPREFIX+str(freeBlock), True)
+        fileobjecttable[freeBlock].writeat(serializedata(indexBlock), 0)
+        startBlock = int(position / BLOCKSIZE)
+        endBlock = int((position + len(data)) / BLOCKSIZE)
+
+        dataStart = 0
+        for x in range(startBlock, endBlock):
+          if indexBlock[x] == -1:
+            indexBlock[x] = _get_set_nextFreeBlock_helper()
+            fileobjecttable[indexBlock[x]] = openfile(FILEDATAPREFIX+str(indexBlock[x]), True)
+          pointer = position % BLOCKSIZE
+          if x == startBlock:
+            fileobjecttable[indexBlock[x]].writeat(data[dataStart:(BLOCKSIZE - pointer)], pointer)
+            dataStart = dataStart + (BLOCKSIZE - pointer)
+          elif x > startBlock and x < endblock:
+            data += fileobjecttable[indexBlock[x]].writeat(data[dataStart:BLOCKSIZE], 0)
+            dataStart = dataStart + BLOCKSIZE
+          elif x == endBlock:
+            data += fileobjecttable[indexBlock[x]].writeat(data[dataStart:(len(data) - dataStart)], 0)
+
+
+    else:
+      indexBlock = deserializedata(fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].readat(None, 0)) 
+
+      startBlock = int(position / BLOCKSIZE)
+      endBlock = int((position + len(data)) / BLOCKSIZE)
+
+      dataStart = 0
+      for x in range(startBlock, endBlock):
+        if indexBlock[x] == -1:
+          indexBlock[x] = _get_set_nextFreeBlock_helper()
+          fileobjecttable[indexBlock[x]] = openfile(FILEDATAPREFIX+str(indexBlock[x]), True)
+        pointer = position % BLOCKSIZE
+        if x == startBlock:
+          fileobjecttable[indexBlock[x]].writeat(data[dataStart:(BLOCKSIZE - pointer)], pointer)
+          dataStart = dataStart + (BLOCKSIZE - pointer)
+        elif x > startBlock and x < endblock:
+          data += fileobjecttable[indexBlock[x]].writeat(data[dataStart:BLOCKSIZE], 0)
+          dataStart = dataStart + BLOCKSIZE
+        elif x == endBlock:
+          data += fileobjecttable[indexBlock[x]].writeat(data[dataStart:(len(data) - dataStart)], 0)
 
     # and update the position
     filedescriptortable[fd]['position'] += len(data)
@@ -1514,10 +1611,31 @@ def write_syscall(fd, data):
     # ... release the lock
     filedescriptortable[fd]['lock'].release()
 
+def _initialize_index_block_helper():
+  indexBlock = {}
+  for x in range(1,401):
+    indexBlock[x] = -1
+
+  return indexBlock
 
 
 
+def _fileWriter_indirect_helper() :
+  fileBlockStr = fileobjecttable[location].readat(None, 0)
+  fileBockObj = desiredmetadata(fileBlockStr)
 
+  startBlock = int(position / BLOCKSIZE)
+  endBlock = int((position + count) / BLOCKSIZE)
+
+  data = ''
+  for x in range(startBlock, endBlock):
+    pointer = position % BLOCKSIZE
+    if x == startBlock:
+      data += fileobjecttable[fileBockObj[x]].readat(BLOCKSIZE - pointer, pointer)
+    elif x > startBlock and x < endblock:
+      data += fileobjecttable[fileBockObj[x]].readat(BLOCKSIZE, 0)
+    elif x == endBlock:
+      data += fileobjecttable[fileBockObj[x]].readat(size % BLOCKSIZE, 0)
 
 
 ##### CLOSE  #####
@@ -1595,9 +1713,20 @@ def _close_helper(fd):
     return 0
 
   # now let's close it and remove it from the table
-  fileobjecttable[inode].close()
+  if filesystemmetadata['inodetable'][inode]['indirect'] == 0:
+    fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].close()
+    del fileobjecttable[filesystemmetadata['inodetable'][inode]['location']]
+  else:
+    #loop through all the links openfiles and close them
+    linkBlockObj = deserializedata(fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].readat(None, 0))
+    for key, pointer in linkBlockObj.iteritems():
+      if pointer != -1:
+        fileobjecttable[pointer].close()
+        del fileobjecttable[pointer]
+    #finally close the linkBlock file
+    fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].close()
+    del fileobjecttable[filesystemmetadata['inodetable'][inode]['location']]
 
-  del fileobjecttable[inode]
 
   # success!
   return 0
@@ -1948,7 +2077,6 @@ def ftruncate_syscall(fd, new_len):
     http://linux.die.net/man/2/ftruncate
   """
   
-
   # check the fd
   if fd not in filedescriptortable and fd >= STARTINGFD:
     raise SyscallError("ftruncate_syscall","EBADF","Invalid old file descriptor.")
