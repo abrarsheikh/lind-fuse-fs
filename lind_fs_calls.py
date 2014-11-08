@@ -385,15 +385,19 @@ def restore_metadata(metadatafilename):
     metadatafo.close()
 
     # get the dict we want
-    desiredmetadata = deserializedata(metadatastring)
-    op = int(filename.split('.')[1])
+    try:
+      desiredmetadata = deserializedata(metadatastring)
+      op = int(filename.split('.')[1])
 
-    if op == 0:
-      filesystemmetadata['superBlock'] = desiredmetadata
-    elif op >=1 and op <= 25:
-      filesystemmetadata['freeBlock'][op] = desiredmetadata
-    elif op > 25:
-      filesystemmetadata['inodetable'][op] = desiredmetadata
+      if op == 0:
+        filesystemmetadata['superBlock'] = desiredmetadata
+      elif op >=1 and op <= 25:
+        filesystemmetadata['freeBlock'][op] = desiredmetadata
+      elif op > 25:
+        if 'location' in desiredmetadata or 'filename_to_inode_dict' in desiredmetadata:
+          filesystemmetadata['inodetable'][op] = desiredmetadata
+    except Exception:
+      pass
 
 
 
@@ -543,11 +547,12 @@ def _get_set_nextFreeBlock_helper():
 
 def _freeUp_block(iNodeNo):
   blockNo = int(iNodeNo / 400) + 1
-  freeBlockFileData = deserializedata(openfile(FILEDATAPREFIX+str(blockNo), False).readat(None, 0))
-  if iNodeNo not in freeBlockFileData:
+  
+  if blockNo not in filesystemmetadata['freeBlock'] and filesystemmetadata['freeBlock'][blockNo][iNodeNo] == False:
     print "Block number invalid"
     return
-  freeBlockFileData[iNodeNo] = True
+  filesystemmetadata['freeBlock'][blockNo][iNodeNo] = True
+  filesystemmetadata['freeBlock'][blockNo]['changed'] = True
   removefile(FILEDATAPREFIX+str(iNodeNo))
 
   if filesystemmetadata['superBlock']['freeStart'] > blockNo:
