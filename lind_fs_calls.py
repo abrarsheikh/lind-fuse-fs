@@ -294,6 +294,7 @@ def _initialize_free_block():
     endFreeBlock = x*MAXNOOFPOINTERININDEX + 1
     for y in xrange(startFreeBlock,endFreeBlock):
       freeBlocks[x][y] = True
+    startFreeBlock += MAXNOOFPOINTERININDEX
   return (freeBlocks) 
 
 
@@ -524,17 +525,16 @@ def _get_absolute_parent_path(path):
 
 # get next free block
 def _get_set_nextFreeBlock_helper():
-  freeBlockIndex = filesystemmetadata['superBlock']['freeStart']
   nextFreeBlock = UNASSIGNEDBLOCKPOINTER
   while nextFreeBlock == UNASSIGNEDBLOCKPOINTER:
-    for key, ele in filesystemmetadata['freeBlock'][freeBlockIndex].iteritems():
-      if filesystemmetadata['freeBlock'][freeBlockIndex][key] == True and key != 'changed':
-        filesystemmetadata['freeBlock'][freeBlockIndex][key] = False
+    for key, ele in filesystemmetadata['freeBlock'][filesystemmetadata['superBlock']['freeStart']].iteritems():
+      if ele == True and key != 'changed':
+        filesystemmetadata['freeBlock'][filesystemmetadata['superBlock']['freeStart']][key] = False
         nextFreeBlock = key
-        filesystemmetadata['freeBlock'][freeBlockIndex]['changed'] = True
+        filesystemmetadata['freeBlock'][filesystemmetadata['superBlock']['freeStart']]['changed'] = True
         break
-    if nextFreeBlock == -1:
-      freeBlockIndex = filesystemmetadata['superBlock']['freeStart'] + 1
+    if nextFreeBlock == UNASSIGNEDBLOCKPOINTER:
+      filesystemmetadata['superBlock']['freeStart'] += 1
       filesystemmetadata['superBlock']['changed'] = True
   return nextFreeBlock
 
@@ -548,7 +548,7 @@ def _freeUp_block(block_no):
   filesystemmetadata['freeBlock'][free_block_index][block_no] = True
   filesystemmetadata['freeBlock'][free_block_index]['changed'] = True
   removefile(FILEDATAPREFIX+str(block_no))
-
+  print "block removed", block_no
   if filesystemmetadata['superBlock']['freeStart'] > free_block_index:
     filesystemmetadata['superBlock']['freeStart'] = free_block_index
     filesystemmetadata['superBlock']['changed'] = True
@@ -1387,6 +1387,10 @@ def write_syscall(fd, data):
 
     # let's get the position...
     position = filedescriptortable[fd]['position']
+
+    if (position+ len(data)) > MAXFILESIZE
+      raise SyscallError("write_syscall","EFBIG","An attempt was made to write a file that exceeds the implementation-defined maximum file size or the process's file size limit, or to write at a position past the maximum allowed offset.")
+
     
     # and the file size...
     filesize = filesystemmetadata['inodetable'][inode]['size']
@@ -1809,6 +1813,7 @@ def truncate_syscall(path, length):
     http://linux.die.net/man/2/truncate_syscall
   """
 
+
   fd = open_syscall(path, O_RDWR, S_IRWXA)
   ret = ftruncate_syscall(fd, length)
 
@@ -1832,6 +1837,9 @@ def ftruncate_syscall(fd, new_len):
   if new_len < 0:
     raise SyscallError("ftruncate_syscall", "EINVAL", "Incorrect length passed.")
 
+  if new_len > MAXFILESIZE
+    raise SyscallError("ftruncate_syscall", "EFBIG", "The argument length is larger than the maximum file size. (XSI) ")
+    
   # Acquire the fd lock...
   desc = filedescriptortable[fd]
   desc['lock'].acquire(True)
