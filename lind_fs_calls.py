@@ -110,7 +110,6 @@
 # Store all of the information about the file system in a dict...
 # This should not be 0 because this is considered to be deleted
 
-ROOTDIRECTORYINODE = 26
 
 METADATAFILENAME = 'lind.metadata'
 
@@ -121,6 +120,26 @@ DIRECTORYPREFIX = 'D'
 FILEPREFIX = 'F'
 
 BLOCKSIZE = 4096 
+
+MAXNOOFBLOCKS = 10000
+
+MAXFILESIZE = 1638400 
+
+MAXNOOFPOINTERININDEX = int(MAXFILESIZE / BLOCKSIZE)
+
+MAXFREEPOINTERBLOCKS = int(MAXNOOFBLOCKS / MAXNOOFPOINTERININDEX)
+
+ROOTDIRECTORYINODE = MAXFREEPOINTERBLOCKS + 1
+
+UNASSIGNEDBLOCKPOINTER = -1
+
+# delete constants
+DELETE_INODEANDFREEUPBLOCK = 1
+DELETE_FREEUPBLOCK = 2
+
+# POINTER TYPE
+DIRECT_POINTER = 0
+INDIRECT_POINTER = 1
 
 filesystemmetadata = {}
 
@@ -244,28 +263,43 @@ def _blank_fs_init():
   #block 0
   filesystemmetadata['dev_id'] = 20
 
-  filesystemmetadata['superBlock'] = {'creationTime': 1376483073,
+  filesystemmetadata['superBlock'] = (_initialize_super_block()) 
+
+  filesystemmetadata['freeBlock'] = (_initialize_free_block())
+  
+  filesystemmetadata['inodetable'] = (_initialize_inodetable())
+    
+  fastinodelookuptable['/'] = ROOTDIRECTORYINODE
+
+  # it makes no sense this wasn/'t done before...
+  persist_metadata(METADATAFILENAME)
+
+def _initialize_super_block():
+  return ({'creationTime': 1376483073,
       'mounted': 50,
       'devId':20,
       'freeStart':1, 
-      'freeEnd':25, 
+      'freeEnd':MAXFREEPOINTERBLOCKS, 
       'root':ROOTDIRECTORYINODE, 
-      'maxBlocks':10000,
-      'changed' : True}
+      'maxBlocks':MAXNOOFBLOCKS,
+      'changed' : True})
 
-  filesystemmetadata['freeBlock'] = {}
-  freeBlockkSize = 400
-  startFreeBlock = 27
-  endFreeBlock = 400
-  for x in xrange(1,26):
-    filesystemmetadata['freeBlock'][x] = {'changed' : True}
-    startFreeBlock = startFreeBlock if startFreeBlock < 400 else ((x - 1)*freeBlockkSize + 1)
-    endFreeBlock = x*freeBlockkSize + 1
+def _initialize_free_block():
+  freeBlocks = {}
+  startFreeBlock = MAXFREEPOINTERBLOCKS + 2 #1 for the root root
+  endFreeBlock = MAXNOOFPOINTERININDEX
+  for x in xrange(1,MAXFREEPOINTERBLOCKS+1):
+    freeBlocks[x] = {'changed' : True}
+    startFreeBlock = startFreeBlock if startFreeBlock < 400 else ((x - 1)*MAXNOOFPOINTERININDEX + 1)
+    endFreeBlock = x*MAXNOOFPOINTERININDEX + 1
     for y in xrange(startFreeBlock,endFreeBlock):
-      filesystemmetadata['freeBlock'][x][y] = True
+      freeBlocks[x][y] = True
+  return (freeBlocks) 
 
-  filesystemmetadata['inodetable'] = {}
-  filesystemmetadata['inodetable'][ROOTDIRECTORYINODE] = {
+
+def _initialize_inodetable():
+  inodetable = {}
+  inodetable[ROOTDIRECTORYINODE] = {
       'size':0, 
               'uid':DEFAULT_UID, 'gid':DEFAULT_GID, 
               'mode':S_IFDIR | S_IRWXA, # directory + all permissions
@@ -276,33 +310,15 @@ def _blank_fs_init():
               'changed' : True,
               'delete' : 0
             }
-  
-
-  # # Now setup blank data structures
-  # filesystemmetadata['nextinode'] = 3
-  # filesystemmetadata['dev_id'] = 20
-  # filesystemmetadata['inodetable'] = {}
-  # filesystemmetadata['inodetable'][ROOTDIRECTORYINODE] = {'size':0, 
-  #           'uid':DEFAULT_UID, 'gid':DEFAULT_GID, 
-  #           'mode':S_IFDIR | S_IRWXA, # directory + all permissions
-  #           'atime':1323630836, 'ctime':1323630836, 'mtime':1323630836,
-  #           'linkcount':2,    # the number of dir entries...
-  #           'filename_to_inode_dict': {DIRECTORYPREFIX+'.':ROOTDIRECTORYINODE, 
-  #           DIRECTORYPREFIX+'..':ROOTDIRECTORYINODE}}
-    
-  fastinodelookuptable['/'] = ROOTDIRECTORYINODE
-  # it makes no sense this wasn/'t done before...
-  persist_metadata(METADATAFILENAME)
-
-
+  return (inodetable) 
 
 # These are used to initialize and stop the system
-def persist_metadata(metadatafilename):
+def persist_metadata(METADATAFILENAME):
 
   # write our data blocks
   keys_to_delete = []
   for key, ele in filesystemmetadata['inodetable'].iteritems():
-    if filesystemmetadata['inodetable'][key]['changed'] is True:
+    if filesystemmetadata['inodetable'][key]['changed'] == True:
       filesystemmetadata['inodetable'][key]['changed'] = False
       fileName = FILEDATAPREFIX+str(key)
       blockStr = serializedata(filesystemmetadata['inodetable'][key])
@@ -315,8 +331,6 @@ def persist_metadata(metadatafilename):
       bFile.close()
     if filesystemmetadata['inodetable'][key]['delete'] > 0:
       if 'filename_to_inode_dict' in filesystemmetadata['inodetable'][key]:
-        # if filesystemmetadata['inodetable'][key]['delete'] != 2:
-          # del filesystemmetadata['inodetable'][key]
         keys_to_delete.append(key)
         _freeUp_block(key)
       elif 'location' in filesystemmetadata['inodetable'][key]:
@@ -325,19 +339,20 @@ def persist_metadata(metadatafilename):
         else:
           indexFileData = deserializedata(openfile(FILEDATAPREFIX+str(filesystemmetadata['inodetable'][key]['location']), False).readat(None, 0))
           for index, ele in indexFileData.iteritems():
-            if ele != -1:
+            if ele != UNASSIGNEDBLOCKPOINTER:
               _freeUp_block(ele)
           _freeUp_block(filesystemmetadata['inodetable'][key]['location'])
         if filesystemmetadata['inodetable'][key]['delete'] != 2:
           keys_to_delete.append(key)
           _freeUp_block(key)
 
+
   for key in keys_to_delete:
     del filesystemmetadata['inodetable'][key]
 
 
   # write superblock
-  if filesystemmetadata['superBlock']['changed'] is True:
+  if filesystemmetadata['superBlock']['changed'] == True:
     fileName = FILEDATAPREFIX+str(0)
     blockStr = serializedata(filesystemmetadata['superBlock'])
     try:
@@ -350,7 +365,7 @@ def persist_metadata(metadatafilename):
 
   # write free block data
   for key, ele in filesystemmetadata['freeBlock'].iteritems():
-    if filesystemmetadata['freeBlock'][key]['changed'] is True:
+    if filesystemmetadata['freeBlock'][key]['changed'] == True:
       filesystemmetadata['freeBlock'][key]['changed'] = False
       fileName = FILEDATAPREFIX+str(key)
       blockStr = serializedata(filesystemmetadata['freeBlock'][key])
@@ -370,13 +385,10 @@ def restore_metadata(metadatafilename):
   filesystemmetadata['freeBlock'] = {}
   filesystemmetadata['inodetable'] = {}
 
-  # filesystemmetadata = {
-  #   'superBlock' : {},
-  #   'freeBlock' : {},
-  #   'inodetable' : {}
-  # }
+# sort the file based on their file names its good to restore in order
   files = [k for k in listfiles() if FILEDATAPREFIX in k]
   files.sort(key = lambda x: int(x.split(".")[1]))
+
   for filename in files:
 
     # restore free blocks
@@ -384,42 +396,22 @@ def restore_metadata(metadatafilename):
     metadatastring = metadatafo.readat(None, 0)
     metadatafo.close()
 
-    # get the dict we want
+    # restore only inode, directory, freeblock and superblock block others are just data blocks that we can ignore
     try:
       desiredmetadata = deserializedata(metadatastring)
       op = int(filename.split('.')[1])
 
       if op == 0:
         filesystemmetadata['superBlock'] = desiredmetadata
-      elif op >=1 and op <= 25:
+      elif op >=1 and op <= MAXFREEPOINTERBLOCKS:
         filesystemmetadata['freeBlock'][op] = desiredmetadata
-      elif op > 25:
+      elif op > MAXFREEPOINTERBLOCKS:
         if 'location' in desiredmetadata or 'filename_to_inode_dict' in desiredmetadata:
           filesystemmetadata['inodetable'][op] = desiredmetadata
     except Exception:
       pass
 
-
-
-  # # open the file and write out the information...
-  # metadatafo = openfile(metadatafilename,True)
-  # metadatastring = metadatafo.readat(None, 0)
-  # metadatafo.close()
-
-  # # get the dict we want
-  # desiredmetadata = deserializedata(metadatastring)
-
-  # I need to put things in the dict, but it's not a global...   so instead
-  # add them one at a time.   It should be empty to start with
-  # for item in desiredmetadata:
-  #   filesystemmetadata[item] = desiredmetadata[item]
-
-
-  # I need to rebuild the fastinodelookuptable. let's do this!
   _rebuild_fastinodelookuptable()
-
-
-
 
 # I'm already added.
 def _recursive_rebuild_fastinodelookuptable_helper(path, inode):
@@ -427,6 +419,7 @@ def _recursive_rebuild_fastinodelookuptable_helper(path, inode):
   # for each entry in my table...
   for entryname,entryinode in filesystemmetadata['inodetable'][inode]['filename_to_inode_dict'].iteritems():
 
+    # ignore the initial F,D prefix
     entryname = entryname[1:]
     # if it's . or .. skip it.
     if entryname == '.' or entryname == '..':
@@ -532,10 +525,10 @@ def _get_absolute_parent_path(path):
 # get next free block
 def _get_set_nextFreeBlock_helper():
   freeBlockIndex = filesystemmetadata['superBlock']['freeStart']
-  nextFreeBlock = -1
-  while nextFreeBlock == -1:
+  nextFreeBlock = UNASSIGNEDBLOCKPOINTER
+  while nextFreeBlock == UNASSIGNEDBLOCKPOINTER:
     for key, ele in filesystemmetadata['freeBlock'][freeBlockIndex].iteritems():
-      if filesystemmetadata['freeBlock'][freeBlockIndex][key] == True:
+      if filesystemmetadata['freeBlock'][freeBlockIndex][key] == True and key != 'changed':
         filesystemmetadata['freeBlock'][freeBlockIndex][key] = False
         nextFreeBlock = key
         filesystemmetadata['freeBlock'][freeBlockIndex]['changed'] = True
@@ -545,29 +538,24 @@ def _get_set_nextFreeBlock_helper():
       filesystemmetadata['superBlock']['changed'] = True
   return nextFreeBlock
 
-def _freeUp_block(iNodeNo):
-  blockNo = int(iNodeNo / 400) + 1
+# free up block given block no
+def _freeUp_block(block_no):
+  free_block_index = int(block_no / 400) + 1
   
-  if blockNo not in filesystemmetadata['freeBlock'] and filesystemmetadata['freeBlock'][blockNo][iNodeNo] == False:
+  if free_block_index not in filesystemmetadata['freeBlock'] and filesystemmetadata['freeBlock'][free_block_index][block_no] == False:
     print "Block number invalid"
     return
-  filesystemmetadata['freeBlock'][blockNo][iNodeNo] = True
-  filesystemmetadata['freeBlock'][blockNo]['changed'] = True
-  removefile(FILEDATAPREFIX+str(iNodeNo))
+  filesystemmetadata['freeBlock'][free_block_index][block_no] = True
+  filesystemmetadata['freeBlock'][free_block_index]['changed'] = True
+  removefile(FILEDATAPREFIX+str(block_no))
 
-  if filesystemmetadata['superBlock']['freeStart'] > blockNo:
-    filesystemmetadata['superBlock']['freeStart'] = blockNo
+  if filesystemmetadata['superBlock']['freeStart'] > free_block_index:
+    filesystemmetadata['superBlock']['freeStart'] = free_block_index
     filesystemmetadata['superBlock']['changed'] = True
-
-
 
 #################### The actual system calls...   #############################
 
-
-
-
 ##### FSTATFS  #####
-
 
 # return statfs data for fstatfs and statfs
 def _istatfs_helper(inode):
@@ -621,10 +609,8 @@ def fstatfs_syscall(fd):
   if fd not in filedescriptortable:
     raise SyscallError("fstatfs_syscall","EBADF","The file descriptor is invalid.")
 
-  
   # if so, return the information...
   return _istatfs_helper(filedescriptortable[fd]['inode'])
-
 
 ##### STATFS  #####
 
@@ -709,7 +695,6 @@ def chdir_syscall(path):
 
   # let's update and return success (0)
   fs_calls_context['currentworkingdirectory'] = truepath
-  
 
   return 0
 
@@ -759,8 +744,6 @@ def mkdir_syscall(path, mode):
     # filesystemmetadata['nextinode'] += 1
     newinode = _get_set_nextFreeBlock_helper()
 
-
-
     newinodeentry = {'size':0, 'uid':DEFAULT_UID, 'gid':DEFAULT_GID, 
             'mode':mode | S_IFDIR,  # DIR+rwxr-xr-x
             # BUG: I'm listing some arbitrary time values.  I could keep a time
@@ -771,7 +754,6 @@ def mkdir_syscall(path, mode):
     
     # ... and put it in the table..
     filesystemmetadata['inodetable'][newinode] = newinodeentry
-
 
     filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][DIRECTORYPREFIX+dirname] = newinode
     # increment the link count on the dir...
@@ -821,13 +803,12 @@ def rmdir_syscall(path):
 
     # TODO: I should check permissions...
 
-
     trueparentpath = _get_absolute_parent_path(path)
     parentinode = fastinodelookuptable[trueparentpath]
 
 
     # remove the entry from the inode table...
-    filesystemmetadata['inodetable'][thisinode]['delete'] = 1
+    filesystemmetadata['inodetable'][thisinode]['delete'] = DELETE_INODEANDFREEUPBLOCK
 
     # We're ready to go!   Let's clean up the file entry
     dirname = truepath.split('/')[-1]
@@ -894,7 +875,6 @@ def link_syscall(oldpath, newpath):
     newparentinode = fastinodelookuptable[truenewparentpath]
     if not IS_DIR(filesystemmetadata['inodetable'][newparentinode]['mode']):
       raise SyscallError("link_syscall","ENOTDIR","New path's parent is not a directory.")
-
 
     # TODO: I should check permissions...
 
@@ -1136,7 +1116,7 @@ def open_syscall(path, flags, mode):
             # BUG: I'm listing some arbitrary time values.  I could keep a time
             # counter too.
             'atime':1323630836, 'ctime':1323630836, 'mtime':1323630836,
-            'linkcount':1, 'indirect' : 0, 'location' : fileInodeBlock, 'delete':0}
+            'linkcount':1, 'indirect' : DIRECT_POINTER, 'location' : fileInodeBlock, 'delete':0}
     
       # ... and put it in the table..
       filesystemmetadata['inodetable'][newinode] = newinodeentry
@@ -1167,14 +1147,13 @@ def open_syscall(path, flags, mode):
           _close_file_with_inode(inode)
           # reset the size to 0
         filesystemmetadata['inodetable'][inode]['size'] = 0
+        filesystemmetadata['inodetable'][inode]['changed'] = True
+
+        removeFile_helper(inode)
 
         # remove the file...
-        filesystemmetadata['inodetable'][inode]['delete'] = 2
-        filesystemmetadata['inodetable'][inode]['indirect'] = 0
-
-        # always open the file.
-        # fileobjecttable[inode] = openfile(FILEDATAPREFIX+str(inode),True)
-
+        filesystemmetadata['inodetable'][inode]['delete'] = DELETE_FREEUPBLOCK
+        filesystemmetadata['inodetable'][inode]['indirect'] = DIRECT_POINTER
 
     # TODO: I should check permissions...
 
@@ -1194,10 +1173,10 @@ def open_syscall(path, flags, mode):
       if filesystemmetadata['inodetable'][inode]['location'] not in fileobjecttable:
         thisfo = openfile(FILEDATAPREFIX+str(filesystemmetadata['inodetable'][inode]['location']),True)
         fileobjecttable[filesystemmetadata['inodetable'][inode]['location']] = thisfo
-        if filesystemmetadata['inodetable'][inode]['indirect'] == 1:
+        if filesystemmetadata['inodetable'][inode]['indirect'] == INDIRECT_POINTER:
           pointers = deserializedata(fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].readat(None, 0))
           for key, pointer in pointers.iteritems():
-            if pointer != -1:
+            if pointer != UNASSIGNEDBLOCKPOINTER:
               thisfo = openfile(FILEDATAPREFIX+str(pointer),True)
               fileobjecttable[pointer] = thisfo
 
@@ -1220,11 +1199,11 @@ def open_syscall(path, flags, mode):
     filesystemmetadatalock.release()
 
 def _close_file_with_inode(inode):
-  if filesystemmetadata['inodetable'][inode]['indirect'] == 1:
+  if filesystemmetadata['inodetable'][inode]['indirect'] == INDIRECT_POINTER:
     str1 = fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].readat(None, 0)
     indexFileData = deserializedata(str1)
     for key, val in indexFileData.iteritems():
-      if val != -1:
+      if val != UNASSIGNEDBLOCKPOINTER:
         fileobjecttable[val].close()
         del fileobjecttable[val]
   fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].close()
@@ -1323,7 +1302,6 @@ def read_syscall(fd, count):
   """ 
     http://linux.die.net/man/2/read
   """
-  print "reading",  count
   # BUG: I probably need a filedescriptortable lock to prevent an untimely
   # close call or similar from messing everything up...
 
@@ -1374,7 +1352,6 @@ def write_syscall(fd, data):
   """ 
     http://linux.die.net/man/2/write
   """
-  print "length", len(data), filedescriptortable[fd]['position']
   # BUG: I probably need a filedescriptortable lock to prevent an untimely
   # close call or similar from messing everything up...
 
@@ -1443,8 +1420,8 @@ def write_syscall(fd, data):
 
 def _initialize_index_block_helper():
   indexBlock = {}
-  for x in range(1,401):
-    indexBlock[x] = -1
+  for x in range(1,MAXNOOFPOINTERININDEX+1):
+    indexBlock[x] = UNASSIGNEDBLOCKPOINTER
 
   return indexBlock
 
@@ -1524,11 +1501,9 @@ def _close_helper(fd):
   _close_file_with_inode(inode)
 
   if filesystemmetadata['inodetable'][inode]['linkcount'] == 0:
-    filesystemmetadata['inodetable'][inode]['delete'] = 1
+    filesystemmetadata['inodetable'][inode]['delete'] = DELETE_INODEANDFREEUPBLOCK
   # success!
   return 0
-
-
 
 def close_syscall(fd):
   """ 
@@ -1652,16 +1627,9 @@ def dup_syscall(fd):
   finally:
     # ... release the lock
     filedescriptortable[fd]['lock'].release()
-  
-
-
-
-
 
 
 ##### FCNTL  #####
-
-
 
 def fcntl_syscall(fd, cmd, *args):
   """ 
@@ -1732,16 +1700,7 @@ def fcntl_syscall(fd, cmd, *args):
     filedescriptortable[fd]['lock'].release()
 
 
-
-
-
-
-
-
-
 ##### GETDENTS  #####
-
-
 
 def getdents_syscall(fd, quantity):
   """ 
@@ -1810,10 +1769,7 @@ def getdents_syscall(fd, quantity):
     # ... release the lock
     filedescriptortable[fd]['lock'].release()
 
-
-
 #### CHMOD ####
-
 
 def chmod_syscall(path, mode):
   """
@@ -1856,7 +1812,6 @@ def truncate_syscall(path, length):
   fd = open_syscall(path, O_RDWR, S_IRWXA)
   ret = ftruncate_syscall(fd, length)
 
-  print "closing"
   close_syscall(fd)
 
   return ret
@@ -1901,25 +1856,19 @@ def ftruncate_syscall(fd, new_len):
     else:
 
       # we must cut
-      # to_save = fileobjecttable[inode].readat(new_len,0)
       to_save = _read_file_data_helper(inode, new_len, 0)
 
       _close_file_with_inode(inode)
-      # close_syscall(fd)
-      # fileobjecttable[inode].close()
+
       # remove the old file
       removeFile_helper(inode)
-      # removefile(FILEDATAPREFIX+str(inode))
+
       # make a new blank one
-      # fileobjecttable[inode] = openfile(FILEDATAPREFIX+str(inode),True)
-
-      # fileobjecttable[inode].writeat(to_save, 0)
-
       filesystemmetadata['inodetable'][inode]['location'] = _setup_index_block(to_save)
       if len(to_save) <= BLOCKSIZE:
-        filesystemmetadata['inodetable'][inode]['indirect'] = 0
+        filesystemmetadata['inodetable'][inode]['indirect'] = DIRECT_POINTER
       else:
-        filesystemmetadata['inodetable'][inode]['indirect'] = 1
+        filesystemmetadata['inodetable'][inode]['indirect'] = INDIRECT_POINTER
 
       filesystemmetadata['inodetable'][inode]['changed'] = True
     filesystemmetadata['inodetable'][inode]['size'] = new_len
@@ -1942,64 +1891,57 @@ def _setup_index_block(data):
 
     index_block_data = _initialize_index_block_helper()
 
-    startBlock = 1
-    endBlock = (len(data) / BLOCKSIZE) + 1
-    position = 0
-    dataStart = 0
-    for x in range(startBlock, endBlock + 1):
-      if index_block_data[x] == -1:
-        index_block_data[x] = _get_set_nextFreeBlock_helper()
-        fileobjecttable[index_block_data[x]] = openfile(FILEDATAPREFIX+str(index_block_data[x]), True)
-      pointer = position % BLOCKSIZE
-      if x == startBlock:
-        write_size = len(data) if len(data) < BLOCKSIZE else BLOCKSIZE
-        fileobjecttable[index_block_data[x]].writeat(data[dataStart:(write_size)], pointer)
-        dataStart = dataStart + (BLOCKSIZE - pointer)
-      elif x > startBlock and x < endBlock:
-        fileobjecttable[index_block_data[x]].writeat(data[dataStart:BLOCKSIZE], 0)
-        dataStart = dataStart + BLOCKSIZE
-      elif x == endBlock:
-        fileobjecttable[index_block_data[x]].writeat(data[dataStart:len(data)], 0)
+    tmp_count = len(data)
+    tmp_position = 0
+    data_write_index = 0
 
+    while tmp_count > 0:
+      block_to_write = int(tmp_position / BLOCKSIZE) + 1
+      if index_block_data[block_to_write] == UNASSIGNEDBLOCKPOINTER:
+        index_block_data[block_to_write] = _get_set_nextFreeBlock_helper()
+        fileobjecttable[index_block_data[block_to_write]] = openfile(FILEDATAPREFIX+str(index_block_data[block_to_write]), True)
+      
+      position_in_block = tmp_position % BLOCKSIZE
+
+      bytestowrite =(BLOCKSIZE - position_in_block)  if tmp_count > BLOCKSIZE else tmp_count
+
+      fileobjecttable[index_block_data[block_to_write]].writeat(data[data_write_index:(data_write_index+bytestowrite)], position_in_block)
+      tmp_count -= (bytestowrite)
+      tmp_position += (bytestowrite)
+      data_write_index += bytestowrite
 
     fileobjecttable[free_block_for_index].writeat(serializedata(index_block_data), 0)
   return free_block_for_index
 
 
-
-
 def removeFile_helper(inode):
-  if filesystemmetadata['inodetable'][inode]['indirect'] == 1:
-    fileobjecttable[filesystemmetadata['inodetable'][inode]['location']] = openfile(FILEDATAPREFIX+str(filesystemmetadata['inodetable'][inode]['location']), False)
-    indexdata = deserializedata(fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].readat(None, 0)) 
-    fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].close()
-    del fileobjecttable[filesystemmetadata['inodetable'][inode]['location']]
+  if filesystemmetadata['inodetable'][inode]['indirect'] == INDIRECT_POINTER:
+    file_handle = openfile(FILEDATAPREFIX+str(filesystemmetadata['inodetable'][inode]['location']), False)
+    indexdata = deserializedata(file_handle.readat(None, 0)) 
+    file_handle.close()
     for key, ele in indexdata.iteritems():
-      if ele != -1:
+      if ele != UNASSIGNEDBLOCKPOINTER:
         removefile(FILEDATAPREFIX+str(ele))
 
   removefile(FILEDATAPREFIX+str(filesystemmetadata['inodetable'][inode]['location']))
 
 
 def _write_file_data_helper(inode, data, position):
-  if filesystemmetadata['inodetable'][inode]['indirect'] == 0:
+  if filesystemmetadata['inodetable'][inode]['indirect'] == DIRECT_POINTER:
     if position + len(data) < BLOCKSIZE:
       fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].writeat(data,position)
     else:
       #create first indirect node
       freeBlock = _get_set_nextFreeBlock_helper()
       indexBlock = _initialize_index_block_helper()
-      indexBlock[0] = filesystemmetadata['inodetable'][inode]['location']
+      indexBlock[1] = filesystemmetadata['inodetable'][inode]['location']
 
       #readjust pointets
       filesystemmetadata['inodetable'][inode]['location'] = freeBlock
-      filesystemmetadata['inodetable'][inode]['indirect'] = 1
+      filesystemmetadata['inodetable'][inode]['indirect'] = INDIRECT_POINTER
       filesystemmetadata['inodetable'][inode]['changed'] = True
 
       fileobjecttable[freeBlock] = openfile(FILEDATAPREFIX+str(freeBlock), True)
-
-
-
 
       tmp_count = len(data)
       tmp_position = position
@@ -2007,7 +1949,7 @@ def _write_file_data_helper(inode, data, position):
 
       while tmp_count > 0:
         block_to_write = int(tmp_position / BLOCKSIZE) + 1
-        if indexBlock[block_to_write] == -1:
+        if indexBlock[block_to_write] == UNASSIGNEDBLOCKPOINTER:
           indexBlock[block_to_write] = _get_set_nextFreeBlock_helper()
           fileobjecttable[indexBlock[block_to_write]] = openfile(FILEDATAPREFIX+str(indexBlock[block_to_write]), True)
         
@@ -2015,46 +1957,10 @@ def _write_file_data_helper(inode, data, position):
 
         bytestowrite =(BLOCKSIZE - position_in_block)  if tmp_count > BLOCKSIZE else tmp_count
 
-        print "writing loc", block_to_write, bytestowrite, position_in_block
         fileobjecttable[indexBlock[block_to_write]].writeat(data[data_write_index:(data_write_index+bytestowrite)], position_in_block)
         tmp_count -= (bytestowrite)
         tmp_position += (bytestowrite)
         data_write_index += bytestowrite
-
-        print "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-        print data
-        print "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-      # startBlock = int(position / BLOCKSIZE) + 1
-      # endBlock = int((position + len(data)) / BLOCKSIZE) + 1
-
-      # # print "pos and end", position, (position + len())
-      # # print "start and end",startBlock, endBlock
-      # dataStart = 0
-      # for x in range(startBlock, endBlock + 1):
-      #   # print "currr block", x
-      #   if indexBlock[x] == -1:
-      #     indexBlock[x] = _get_set_nextFreeBlock_helper()
-      #     fileobjecttable[indexBlock[x]] = openfile(FILEDATAPREFIX+str(indexBlock[x]), True)
-
-      #   pointer = position % BLOCKSIZE
-      #   if x == startBlock:
-      #     write_size = len(data) if len(data) < (BLOCKSIZE - pointer) else BLOCKSIZE - pointer
-      #     # print "++++++++++++++++++++++++++++++++++++++++++"
-      #     # print data[dataStart:write_size]
-      #     # print "++++++++++++++++++++++++++++++++++++++++++"
-      #     fileobjecttable[indexBlock[x]].writeat(data[dataStart:write_size], pointer)
-      #     dataStart = dataStart + (BLOCKSIZE - pointer)
-      #   elif x > startBlock and x < endBlock:
-      #     fileobjecttable[indexBlock[x]].writeat(data[dataStart:BLOCKSIZE], 0)
-      #     dataStart = dataStart + BLOCKSIZE
-      #     # print "++++++++++++++++++++++++++++++++++++++++++"
-      #     # print data[dataStart:BLOCKSIZE]
-      #     # print "++++++++++++++++++++++++++++++++++++++++++"
-      #   elif x == endBlock:
-      #     fileobjecttable[indexBlock[x]].writeat(data[dataStart:len(data)], 0)
-          # print "++++++++++++++++++++++++++++++++++++++++++"
-          # print data[dataStart:len(data)]
-          # print "++++++++++++++++++++++++++++++++++++++++++"
 
       fileobjecttable[freeBlock].writeat(serializedata(indexBlock), 0)
   else:
@@ -2065,7 +1971,7 @@ def _write_file_data_helper(inode, data, position):
 
     while tmp_count > 0:
       block_to_write = int(tmp_position / BLOCKSIZE) + 1
-      if index_block_data[block_to_write] == -1:
+      if index_block_data[block_to_write] == UNASSIGNEDBLOCKPOINTER:
         index_block_data[block_to_write] = _get_set_nextFreeBlock_helper()
         fileobjecttable[index_block_data[block_to_write]] = openfile(FILEDATAPREFIX+str(index_block_data[block_to_write]), True)
       
@@ -2073,15 +1979,10 @@ def _write_file_data_helper(inode, data, position):
 
       bytestowrite =(BLOCKSIZE - position_in_block)  if tmp_count > BLOCKSIZE else tmp_count
 
-      print "writing loc", block_to_write, bytestowrite, position_in_block
       fileobjecttable[index_block_data[block_to_write]].writeat(data[data_write_index:(data_write_index+bytestowrite)], position_in_block)
       tmp_count -= (bytestowrite)
       tmp_position += (bytestowrite)
       data_write_index += bytestowrite
-
-      print "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-      print data
-      print "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
     fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].writeat(serializedata(index_block_data), 0)
 
 
@@ -2093,39 +1994,23 @@ def _read_file_data_helper(inode, count, position):
     data = fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].readat(count, position)
   else:
     indexdata = deserializedata(fileobjecttable[filesystemmetadata['inodetable'][inode]['location']].readat(None, 0)) 
-    # startBlock = int(position / BLOCKSIZE) + 1
-    # endBlock = math.ceil((position + count) / BLOCKSIZE)
-    # print "pos and end", position, (position + count)
-    # print "start and end",startBlock, endBlock
+
     data = ''
     tmp_count = count
     tmp_position = position
+    indextest = 1
     while tmp_count > 0:
       block_to_read = int(tmp_position / BLOCKSIZE) + 1
+      if indexdata[block_to_read] == UNASSIGNEDBLOCKPOINTER:
+        break
       position_in_block = tmp_position % BLOCKSIZE
 
-      bytestoread =(BLOCKSIZE - position_in_block)  if tmp_count > BLOCKSIZE else tmp_count
+      bytestoread = (BLOCKSIZE - position_in_block)  if tmp_count > BLOCKSIZE else tmp_count
 
-      print "reading loc", block_to_read, bytestoread, position_in_block
       data += fileobjecttable[indexdata[block_to_read]].readat(bytestoread, position_in_block)
       tmp_count -= (bytestoread)
       tmp_position += (bytestoread)
-      print "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-      print data
-      print "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-    # for x in range(startBlock, endBlock+1):
-
-    #   print "curr read block", x
-    #   pointer = position % BLOCKSIZE
-    #   if x == startBlock:
-    #     toread = count if count < (BLOCKSIZE - pointer) else BLOCKSIZE - pointer
-    #     data += fileobjecttable[indexdata[x]].readat(toread, pointer)
-    #   elif x > startBlock and x < endBlock:
-    #     data += fileobjecttable[indexdata[x]].readat(BLOCKSIZE, 0)
-    #   elif x == endBlock:
-    #     data += fileobjecttable[indexdata[x]].readat((position + count) % BLOCKSIZE, 0)
-      # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
+      indextest += 1
   return data
 
 #### MKNOD ####
@@ -2366,12 +2251,12 @@ def rename_syscall(old, new):
     inode = fastinodelookuptable[true_old_path]
 
     newname = true_new_path.split('/')[-1]
-    filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][newname] = inode
+    filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][FILEPREFIX+newname] = inode
 
     fastinodelookuptable[true_new_path] = inode
 
     oldname = true_old_path.split('/')[-1]
-    del filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][oldname]
+    del filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][FILEPREFIX+oldname]
     del fastinodelookuptable[true_old_path]
 
   finally:
