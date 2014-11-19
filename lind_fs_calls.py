@@ -290,10 +290,13 @@ def _initialize_free_block():
   endFreeBlock = MAXNOOFPOINTERININDEX
   for x in xrange(1,MAXFREEPOINTERBLOCKS+1):
     freeBlocks[x] = {'changed' : True}
-    startFreeBlock = startFreeBlock if startFreeBlock < 400 else ((x - 1)*MAXNOOFPOINTERININDEX + 1)
+    startFreeBlock = ((x - 1)*MAXNOOFPOINTERININDEX + 1)
     endFreeBlock = x*MAXNOOFPOINTERININDEX + 1
     for y in xrange(startFreeBlock,endFreeBlock):
-      freeBlocks[x][y] = True
+      if y < (MAXFREEPOINTERBLOCKS+2):
+        freeBlocks[x][y] = False
+      else:
+        freeBlocks[x][y] = True
     startFreeBlock += MAXNOOFPOINTERININDEX
   return (freeBlocks) 
 
@@ -1126,11 +1129,13 @@ def open_syscall(path, flags, mode):
       # let's make the parent point to it...
       filesystemmetadata['inodetable'][parentinode]['filename_to_inode_dict'][FILEPREFIX+filename] = newinode
       # ... and increment the link count on the dir...
-      filesystemmetadata['inodetable'][parentinode]['linkcount'] += 1
+      # filesystemmetadata['inodetable'][parentinode]['linkcount'] += 1
       filesystemmetadata['inodetable'][parentinode]['changed'] = True
 
       # finally, update the fastinodelookuptable
       fastinodelookuptable[truepath] = newinode
+      print newinode
+      openfile(FILEDATAPREFIX+str(newinode),True).close()
 
     # if the file did exist, were we told to create with exclusion?
     else:
@@ -1388,7 +1393,7 @@ def write_syscall(fd, data):
     # let's get the position...
     position = filedescriptortable[fd]['position']
 
-    if (position+ len(data)) > MAXFILESIZE
+    if (position+ len(data)) > MAXFILESIZE:
       raise SyscallError("write_syscall","EFBIG","An attempt was made to write a file that exceeds the implementation-defined maximum file size or the process's file size limit, or to write at a position past the maximum allowed offset.")
 
     
@@ -1837,7 +1842,7 @@ def ftruncate_syscall(fd, new_len):
   if new_len < 0:
     raise SyscallError("ftruncate_syscall", "EINVAL", "Incorrect length passed.")
 
-  if new_len > MAXFILESIZE
+  if new_len > MAXFILESIZE:
     raise SyscallError("ftruncate_syscall", "EFBIG", "The argument length is larger than the maximum file size. (XSI) ")
     
   # Acquire the fd lock...
@@ -2065,6 +2070,7 @@ def mknod_syscall(path, mode, dev):
   # properly, instead of putting everything in open_syscall.
   inode = filedescriptortable[fd]['inode']
   filesystemmetadata['inodetable'][inode]['rdev'] = dev
+  openfile(FILEDATAPREFIX+str(filesystemmetadata['inodetable'][inode]['location']),True).close()
   # close the file descriptor... 
   close_syscall(fd)
   return 0

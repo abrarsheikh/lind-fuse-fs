@@ -486,7 +486,7 @@ class LindFuseFS(Fuse):
 
 def main():
     global LOGGING
-
+    
     if "-v" in sys.argv or "--verbose" in sys.argv:
         LOGGING = True
 
