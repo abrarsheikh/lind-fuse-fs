@@ -276,7 +276,7 @@ def _blank_fs_init():
 
 def _initialize_super_block():
   return ({'creationTime': 1376483073,
-      'mounted': 50,
+      'mounted': 1,
       'devId':20,
       'freeStart':1, 
       'freeEnd':MAXFREEPOINTERBLOCKS, 
@@ -407,6 +407,8 @@ def restore_metadata(metadatafilename):
 
       if op == 0:
         filesystemmetadata['superBlock'] = desiredmetadata
+        filesystemmetadata['superBlock']['mounted'] += 1
+        filesystemmetadata['superBlock']['changed'] = True
       elif op >=1 and op <= MAXFREEPOINTERBLOCKS:
         filesystemmetadata['freeBlock'][op] = desiredmetadata
       elif op > MAXFREEPOINTERBLOCKS:
